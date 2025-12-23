@@ -1,4 +1,4 @@
-import google.genai as genai
+from openai import OpenAI
 from llama_index.readers.file import PDFReader
 from llama_index.core.node_parser import SentenceSplitter
 from dotenv import load_dotenv
@@ -6,9 +6,20 @@ import os
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
-EMBED_MODEL = "models/text-embedding-004"
-EMBED_DIM = 768
+# Lazy client initialization
+_client = None
+
+def get_openai_client():
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=os.getenv("OPENAI_API_BASE_URL")
+        )
+    return _client
+
+EMBED_MODEL = "text-embedding-3-small"
+EMBED_DIM = 1536
 
 splitter = SentenceSplitter(chunk_size=1000, chunk_overlap=200)
 
@@ -22,8 +33,9 @@ def load_and_chunk_pdf(path: str):
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    result = client.models.embed_content(
+    client = get_openai_client()
+    response = client.embeddings.create(
         model=EMBED_MODEL,
-        contents=texts
+        input=texts,
     )
-    return [embedding.values for embedding in result.embeddings]
+    return [item.embedding for item in response.data]
