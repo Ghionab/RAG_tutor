@@ -3,10 +3,26 @@ from qdrant_client.models import VectorParams, Distance, PointStruct
 
 
 class QdrantStorage:
-    def __init__(self, url="http://localhost:6333", collection="docs", dim=768):
+    def __init__(self, url="http://localhost:6333", collection="docs", dim=1536):
         self.client = QdrantClient(url=url, timeout=30)
         self.collection = collection
-        if not self.client.collection_exists(self.collection):
+        self.dim = dim
+        
+        # Check if collection exists and has correct dimensions
+        if self.client.collection_exists(self.collection):
+            # Get collection info to check dimensions
+            collection_info = self.client.get_collection(self.collection)
+            existing_dim = collection_info.config.params.vectors.size
+            
+            if existing_dim != dim:
+                print(f"Collection '{self.collection}' exists with dimension {existing_dim}, but expected {dim}")
+                print(f"Recreating collection with correct dimensions...")
+                self.client.delete_collection(self.collection)
+                self.client.create_collection(
+                    collection_name=self.collection,
+                    vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+                )
+        else:
             self.client.create_collection(
                 collection_name=self.collection,
                 vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
@@ -17,12 +33,12 @@ class QdrantStorage:
         self.client.upsert(self.collection, points=points)
 
     def search(self, query_vector, top_k: int = 5):
-        results = self.client.search(
+        results = self.client.query_points(
             collection_name=self.collection,
-            query_vector=query_vector,
+            query=query_vector,
             with_payload=True,
             limit=top_k
-        )
+        ).points
         contexts = []
         sources = set()
 
