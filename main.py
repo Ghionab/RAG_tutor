@@ -2,19 +2,20 @@ import logging
 from fastapi import FastAPI
 import inngest
 import inngest.fast_api
-from google import genai  # Use the new SDK
+from inngest.experimental import ai
 from dotenv import load_dotenv
 import uuid
 import os
 import datetime
+import google.genai as genai
 from data_loader import load_and_chunk_pdf, embed_texts
 from vector_db import QdrantStorage
 from custom_types import RAQQueryResult, RAGSearchResult, RAGUpsertResult, RAGChunkAndSrc
 
 load_dotenv()
 
-# Initialize Gemini Client
-gemini_client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
+# Initialize Gemini client
+gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 inngest_client = inngest.Inngest(
     app_id="rag_app",
@@ -25,16 +26,7 @@ inngest_client = inngest.Inngest(
 
 @inngest_client.create_function(
     fn_id="RAG: Ingest PDF",
-    trigger=inngest.TriggerEvent(event="rag/ingest_pdf"),
-    throttle=inngest.Throttle(
-        limit=2,  # FIXED: Changed 'count' to 'limit'
-        period=datetime.timedelta(minutes=1)
-    ),
-    rate_limit=inngest.RateLimit(
-        limit=1,
-        period=datetime.timedelta(hours=4),
-        key="event.data.source_id",
-    ),
+    trigger=inngest.TriggerEvent(event="rag/ingest_pdf")
 )
 async def rag_ingest_pdf(ctx: inngest.Context):
     def _load(ctx: inngest.Context) -> RAGChunkAndSrc:
@@ -74,28 +66,28 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
     found = await ctx.step.run("embed-and-search", lambda: _search(question, top_k), output_type=RAGSearchResult)
 
     context_block = "\n\n".join(f"- {c}" for c in found.contexts)
-    prompt = (
+    user_content = (
         "Use the following context to answer the question.\n\n"
         f"Context:\n{context_block}\n\n"
         f"Question: {question}\n"
         "Answer concisely using the context above."
     )
 
-    # Use ctx.step.run to perform the Gemini inference
-    async def _get_gemini_answer():
-        response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash", # Or gemini-1.5-flash
-            contents=prompt
-        )
-        return response.text
+    # Use Gemini directly instead of Inngest AI adapter
+    response = gemini_client.models.generate_content(
+        model="models/gemini-2.5-flash",
+        contents=[
+            {"role": "system", "parts": [{"text": "You answer questions using only the provided context."}]},
+            {"role": "user", "parts": [{"text": user_content}]}
+        ],
+        config={
+            "max_output_tokens": 1024,
+            "temperature": 0.2
+        }
+    )
 
-    answer = await ctx.step.run("gemini-llm-answer", _get_gemini_answer)
-
-    return {
-        "answer": answer.strip(), 
-        "sources": found.sources, 
-        "num_contexts": len(found.contexts)
-    }
+    answer = response.candidates[0].content.parts[0].text.strip()
+    return {"answer": answer, "sources": found.sources, "num_contexts": len(found.contexts)}
 
 app = FastAPI()
 
