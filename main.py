@@ -7,15 +7,11 @@ from dotenv import load_dotenv
 import uuid
 import os
 import datetime
-import google.genai as genai
 from data_loader import load_and_chunk_pdf, embed_texts
 from vector_db import QdrantStorage
 from custom_types import RAQQueryResult, RAGSearchResult, RAGUpsertResult, RAGChunkAndSrc
 
 load_dotenv()
-
-# Initialize Gemini client
-gemini_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 inngest_client = inngest.Inngest(
     app_id="rag_app",
@@ -26,7 +22,16 @@ inngest_client = inngest.Inngest(
 
 @inngest_client.create_function(
     fn_id="RAG: Ingest PDF",
-    trigger=inngest.TriggerEvent(event="rag/ingest_pdf")
+    trigger=inngest.TriggerEvent(event="rag/ingest_pdf"),
+    throttle=inngest.Throttle(
+    limit=2,
+    period=datetime.timedelta(minutes=1)
+), 
+    rate_limit=inngest.RateLimit(
+        limit=1,
+        period=datetime.timedelta(hours=4),
+        key="event.data.source_id",
+  ),
 )
 async def rag_ingest_pdf(ctx: inngest.Context):
     def _load(ctx: inngest.Context) -> RAGChunkAndSrc:
@@ -73,20 +78,26 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
         "Answer concisely using the context above."
     )
 
-    # Use Gemini directly instead of Inngest AI adapter
-    response = gemini_client.models.generate_content(
-        model="models/gemini-2.5-flash",
-        contents=[
-            {"role": "system", "parts": [{"text": "You answer questions using only the provided context."}]},
-            {"role": "user", "parts": [{"text": user_content}]}
-        ],
-        config={
-            "max_output_tokens": 1024,
-            "temperature": 0.2
+    adapter = ai.openai.Adapter(
+        auth_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_API_BASE_URL"),
+        model="gpt-3.5-turbo"
+    )
+
+    res = await ctx.step.ai.infer(
+        "llm-answer",
+        adapter=adapter,
+        body={
+            "max_tokens": 1024,
+            "temperature": 0.2,
+            "messages": [
+                {"role": "system", "content": "You answer questions using only the provided context."},
+                {"role": "user", "content": user_content}
+            ]
         }
     )
 
-    answer = response.candidates[0].content.parts[0].text.strip()
+    answer = res["choices"][0]["message"]["content"].strip()
     return {"answer": answer, "sources": found.sources, "num_contexts": len(found.contexts)}
 
 app = FastAPI()
